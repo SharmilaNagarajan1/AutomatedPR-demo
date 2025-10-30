@@ -1,78 +1,54 @@
-name: Terraform Automation (Plan + Apply)
+# .github/workflows/terraform-auto.yml
+name: Terraform (Plan on feature / Apply on main)
 
 on:
   push:
-    branches:
-      - 'feature/**'
-      - 'main'
+    branches: ['feature/**', 'main']
 
 permissions:
   contents: write
   pull-requests: write
-  id-token: write
 
 jobs:
-  terraform:
+  tf:
     runs-on: ubuntu-latest
     env:
       TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
-    name: Terraform Plan or Apply
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.5
-
-      - name: Azure Login
-        uses: azure/login@v2
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.9.5 }
+      - uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Terraform Init        
-        run: terraform init
-
+      - name: Terraform Init
+        run: terraform init -input=false
       - name: Terraform Validate
         run: terraform validate
 
-      # ──────────────── PLAN (Feature Branch) ────────────────
+      # PLAN on feature/*
       - name: Terraform Plan
         if: startsWith(github.ref, 'refs/heads/feature/')
-        id: plan
-        run: terraform plan -no-color -out=tfplan | tee plan_output.txt
+        run: terraform plan -no-color -input=false | tee plan_output.txt
 
-      - name: Upload Plan Output
+      - name: Open PR to main
         if: startsWith(github.ref, 'refs/heads/feature/')
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan
-          path: plan_output.txt
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # create only if not already open
+          n=$(gh pr list --head "${{ github.ref_name }}" --base main --state open --json number --jq '.[0].number' || true)
+          if [ -z "$n" ]; then
+            gh pr create --title "TF Plan - ${{ github.ref_name }}" \
+                         --body "$(cat plan_output.txt || echo 'Plan ran. See artifact.')" \
+                         --base main --head "${{ github.ref_name }}"
+          else
+            echo "PR #$n already open."
+          fi
 
-      - name: Create or Update Pull Request
-        if: startsWith(github.ref, 'refs/heads/feature/')
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Terraform Plan - ${{ github.ref_name }}"
-          body: |
-            ✅ Terraform plan generated for **${{ github.ref_name }}**
-
-            ```
-            $(cat plan_output.txt)
-            ```
-
-            Please review the plan before merging.
-          base: main
-          branch: ${{ github.ref_name }}
-          commit-message: "Terraform plan for ${{ github.ref_name }}"
-          draft: false
-          delete-branch: false
-          labels: terraform, auto-pr
-
-      # ──────────────── APPLY (Main Branch) ────────────────
+      # APPLY on main
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
-        run: terraform apply -auto-approve
+        run: terraform apply -auto-approve -input=false
